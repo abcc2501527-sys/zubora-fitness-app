@@ -100,6 +100,24 @@ export async function removeFriend(friendUserId: string): Promise<void> {
  * ========================================================== */
 
 /**
+ * 同じトピック名で作られた既存チャンネルを全部剥がす。
+ *
+ * `supabase.channel(name)` は同名チャンネルが登録済みだとその「購読済み」
+ * インスタンスを返すため、React dev の「effect 実行 → cleanup → 再実行」で
+ * `.on()` を購読後に呼んでしまい `cannot add callbacks after subscribe()`
+ * になる。生成前とクリーンアップの両方でこれを呼んで取りこぼしを防ぐ。
+ * （チャンネル生成が async の場合、cleanup 時点で local 変数がまだ null の
+ *  ことがあるので、トピック名で確実に消す。）
+ */
+function removeChannelsByTopic(name: string): void {
+  for (const ch of supabase.getChannels()) {
+    if (ch.topic === name || ch.topic === `realtime:${name}`) {
+      void supabase.removeChannel(ch);
+    }
+  }
+}
+
+/**
  * Supabase Presence でフレンドのオンライン状況を購読。
  *
  *   useEffect(() => subscribeToPresence(setOnline), []);
@@ -109,15 +127,18 @@ export async function removeFriend(friendUserId: string): Promise<void> {
  *   フォールバック用）
  */
 export function subscribeToPresence(onChange: (online: OnlineMap) => void): () => void {
+  const TOPIC = 'online-users';
   let channel: RealtimeChannel | null = null;
   let disposed = false;
+
+  removeChannelsByTopic(TOPIC);
 
   (async () => {
     const { data: auth } = await supabase.auth.getUser();
     if (disposed) return;
     const key = auth.user?.id ?? `anon-${Math.random().toString(36).slice(2)}`;
 
-    channel = supabase.channel('online-users', {
+    channel = supabase.channel(TOPIC, {
       config: { presence: { key } },
     });
 
@@ -149,6 +170,7 @@ export function subscribeToPresence(onChange: (online: OnlineMap) => void): () =
     disposed = true;
     void supabase.rpc('update_my_presence', { p_is_online: false });
     if (channel) void supabase.removeChannel(channel);
+    else removeChannelsByTopic(TOPIC);
   };
 }
 
@@ -158,14 +180,17 @@ export function subscribeToPresence(onChange: (online: OnlineMap) => void): () =
 
 /** friendships への変更（自分宛の申請など）を購読 */
 export function subscribeToFriendRequests(onChange: () => void): () => void {
+  const TOPIC = 'friendship-changes';
   let channel: RealtimeChannel | null = null;
   let disposed = false;
+
+  removeChannelsByTopic(TOPIC);
 
   (async () => {
     const { data: auth } = await supabase.auth.getUser();
     if (disposed || !auth.user) return;
     channel = supabase
-      .channel('friendship-changes')
+      .channel(TOPIC)
       .on(
         'postgres_changes',
         {
@@ -182,6 +207,7 @@ export function subscribeToFriendRequests(onChange: () => void): () => void {
   return () => {
     disposed = true;
     if (channel) void supabase.removeChannel(channel);
+    else removeChannelsByTopic(TOPIC);
   };
 }
 
@@ -192,8 +218,10 @@ export function subscribeToFriendRequests(onChange: () => void): () => void {
 export function subscribeToFriendPresenceRows(
   onChange: (userId: string, isOnline: boolean, lastSeen: string) => void,
 ): () => void {
+  const TOPIC = 'friend-presence-rows';
+  removeChannelsByTopic(TOPIC);
   const channel = supabase
-    .channel('friend-presence-rows')
+    .channel(TOPIC)
     .on(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'users' },
