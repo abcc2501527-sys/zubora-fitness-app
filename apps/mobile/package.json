@@ -15,6 +15,7 @@
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.110.4",
+    "budoux": "^0.9.3",
     "expo": "^57.0.0",
     "expo-build-properties": "~57.0.17",
     "expo-clipboard": "~57.0.1",

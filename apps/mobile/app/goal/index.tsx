@@ -24,6 +24,7 @@ import { GOAL_QUESTIONS, type OptionValue } from '@/constants/goal-questions';
 import { MonoColors, MonoGlyph, MonoLayout } from '@/constants/mono-theme';
 import { goalDraft } from '@/lib/goal-draft';
 import { tapImpact } from '@/lib/haptics';
+import { softWrapJa } from '@/lib/ja-text';
 import { fetchCurrentRoadmap, fetchThisWeekFocus, saveRoadmap } from '@/services/goalService';
 import { fetchHomeStats } from '@/services/workoutService';
 import type { Roadmap, RoadmapTask, WeekFocus } from '@/types/goal';
@@ -63,7 +64,7 @@ function withTitleBreaks(title: string): string {
   return title
     .replace(TITLE_BREAK_PATTERN, '$1\n')
     .split('\n')
-    .map((line) => line.trim())
+    .map((line) => softWrapJa(line.trim()))
     .filter((line) => line.length > 0)
     .join('\n');
 }
@@ -225,18 +226,16 @@ export default function GoalRoadmapScreen() {
                     status === 'done' && styles.cardDone,
                     status === 'upcoming' && styles.cardFuture,
                   ]}>
-                  <View style={styles.cardHead}>
-                    <View style={styles.milestoneTitleRow}>
-                      <Text style={styles.milestoneTitle}>{withTitleBreaks(m.title)}</Text>
-                      {status === 'done' && (
-                        <View style={styles.doneBadge}>
-                          <Text style={styles.doneBadgeText}>完了！</Text>
-                        </View>
-                      )}
-                    </View>
+                  <Text style={styles.milestoneTitle}>{withTitleBreaks(m.title)}</Text>
+                  <View style={styles.metaRow}>
                     <Text style={styles.weeks}>{m.period_weeks}週</Text>
+                    {status === 'done' && (
+                      <View style={styles.doneBadge}>
+                        <Text style={styles.doneBadgeText}>完了！</Text>
+                      </View>
+                    )}
                   </View>
-                  {m.description ? <Text style={styles.desc}>{m.description}</Text> : null}
+                  {m.description ? <Text style={styles.desc}>{softWrapJa(m.description)}</Text> : null}
 
                   {m.tasks.map((t, ti) => {
                     const tStatus = taskStatus(t);
@@ -432,22 +431,16 @@ const styles = StyleSheet.create({
     backgroundColor: MonoColors.successTint,
     borderColor: MonoColors.success,
   },
-  cardHead: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  milestoneTitleRow: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
   milestoneTitle: {
-    flexShrink: 1,
     fontSize: 15,
     fontWeight: '700',
     color: MonoColors.ink,
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
   },
   doneBadge: {
     backgroundColor: MonoColors.success,
@@ -460,7 +453,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: MonoColors.onInk,
   },
-  weeks: { fontSize: 11, color: MonoColors.textMuted, marginLeft: 8 },
+  weeks: { fontSize: 11, color: MonoColors.textMuted },
   desc: {
     fontSize: 12,
     color: MonoColors.textSecondary,
