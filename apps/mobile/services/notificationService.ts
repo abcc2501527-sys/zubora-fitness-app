@@ -68,6 +68,9 @@ export async function sendPushNotification(
   body: string,
 ) {
   if (!targetPushToken) return;
+  // WebブラウザからだとCORSでブロックされてFailed to fetchになるだけで、
+  // そもそもWebではpush_token自体を登録していない（上のregisterForPushNotificationsAsync参照）
+  if (Platform.OS === 'web') return;
 
   const message = {
     to: targetPushToken,

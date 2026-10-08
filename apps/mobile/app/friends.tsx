@@ -45,6 +45,7 @@ import { notifySuccess, tapImpact, tapLight } from '@/lib/haptics';
 import { fetchMyFriendCode } from '@/services/authService';
 import {
   addFriendComment,
+  deleteFriendComment,
   getFriendComments,
   getFriendCommentSummary,
 } from '@/services/friendCommentService';
@@ -157,7 +158,8 @@ function FriendsDashboard() {
     }
 
     try {
-      const friendIds = f.filter((x) => !x.is_self).map((x) => x.user_id);
+      // 自分のカード宛てにもらったコメントも見えるよう、自分自身のidも含める
+      const friendIds = f.map((x) => x.user_id);
       const summaries = await getFriendCommentSummary(friendIds);
       setCommentSummary(Object.fromEntries(summaries.map((s) => [s.to_user_id, s])));
     } catch (e) {
@@ -471,24 +473,24 @@ function FriendCard({
           <NudgeRow emojis={nudgeEmojis} sentEmoji={nudgedEmoji} onPick={onNudge} />
         )}
 
-        {!friend.is_self && (
-          <Pressable style={styles.commentPreview} onPress={onOpenComments} hitSlop={4}>
-            <Feather name="message-circle" size={12} color={MonoColors.textMuted} />
-            {commentSummary && commentSummary.comment_count > 0 ? (
-              <Text style={styles.commentPreviewText} numberOfLines={1}>
-                <Text style={styles.commentPreviewName}>{commentSummary.latest_from_name}</Text>
-                {'：' + commentSummary.latest_body}
-                {commentSummary.comment_count > 1 && (
-                  <Text style={styles.commentPreviewCount}>
-                    {'　他' + (commentSummary.comment_count - 1) + '件'}
-                  </Text>
-                )}
-              </Text>
-            ) : (
-              <Text style={styles.commentPreviewText}>ひと言コメントする</Text>
-            )}
-          </Pressable>
-        )}
+        <Pressable style={styles.commentPreview} onPress={onOpenComments} hitSlop={4}>
+          <Feather name="message-circle" size={12} color={MonoColors.textMuted} />
+          {commentSummary && commentSummary.comment_count > 0 ? (
+            <Text style={styles.commentPreviewText} numberOfLines={1}>
+              <Text style={styles.commentPreviewName}>{commentSummary.latest_from_name}</Text>
+              {'：' + commentSummary.latest_body}
+              {commentSummary.comment_count > 1 && (
+                <Text style={styles.commentPreviewCount}>
+                  {'　他' + (commentSummary.comment_count - 1) + '件'}
+                </Text>
+              )}
+            </Text>
+          ) : (
+            <Text style={styles.commentPreviewText}>
+              {friend.is_self ? 'まだコメントはありません' : 'ひと言コメントする'}
+            </Text>
+          )}
+        </Pressable>
       </View>
     </Pressable>
   );
@@ -875,6 +877,9 @@ function CommentModal({
   onClose: () => void;
   onPosted: () => void;
 }) {
+  const { session } = useAuthSession();
+  const myUserId = session?.user?.id;
+
   const [comments, setComments] = useState<FriendCommentRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [body, setBody] = useState('');
@@ -927,6 +932,28 @@ function CommentModal({
     }
   };
 
+  const handleDelete = (commentId: string) => {
+    Alert.alert('コメントを削除', 'このコメントを削除しますか？', [
+      { text: 'キャンセル', style: 'cancel' },
+      {
+        text: '削除する',
+        style: 'destructive',
+        onPress: async () => {
+          tapImpact();
+          const prev = comments;
+          setComments((cur) => cur.filter((c) => c.comment_id !== commentId));
+          try {
+            await deleteFriendComment(commentId);
+            onPosted();
+          } catch (e) {
+            console.warn('[friends] コメント削除に失敗しました', e);
+            setComments(prev);
+          }
+        },
+      },
+    ]);
+  };
+
   return (
     <Modal visible={!!friend} transparent animationType="fade" onRequestClose={close}>
       <KeyboardAvoidingView
@@ -938,8 +965,14 @@ function CommentModal({
             style={[styles.sheet, styles.commentSheet]}
             onPress={(e) => e.stopPropagation()}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>{friend?.username}さんへのコメント</Text>
-            <Text style={styles.sheetSub}>フレンドだけに見える、ひと言の応援メモです</Text>
+            <Text style={styles.sheetTitle}>
+              {friend?.is_self ? 'あなたへのコメント' : `${friend?.username}さんへのコメント`}
+            </Text>
+            <Text style={styles.sheetSub}>
+              {friend?.is_self
+                ? 'フレンドからもらった、ひと言の応援メモです（24時間で自動的に消えます）'
+                : 'フレンドだけに見える、ひと言の応援メモです（24時間で自動的に消えます）'}
+            </Text>
 
             <ScrollView style={styles.commentList} contentContainerStyle={{ gap: 12 }}>
               {loading ? (
@@ -960,33 +993,43 @@ function CommentModal({
                       <Text style={styles.commentRowBody}>{c.body}</Text>
                       <Text style={styles.commentRowTime}>{formatRelative(c.created_at)}</Text>
                     </View>
+                    {(c.from_user_id === myUserId || friend?.is_self) && (
+                      <Pressable
+                        hitSlop={8}
+                        onPress={() => handleDelete(c.comment_id)}
+                        style={styles.commentDeleteBtn}>
+                        <Feather name="trash-2" size={14} color={MonoColors.textMuted} />
+                      </Pressable>
+                    )}
                   </View>
                 ))
               )}
             </ScrollView>
 
-            <View style={styles.commentInputRow}>
-              <TextInput
-                style={styles.commentInput}
-                placeholder="今日のひと言を送る"
-                placeholderTextColor={MonoColors.textMuted}
-                value={body}
-                onChangeText={setBody}
-                maxLength={200}
-                onSubmitEditing={submit}
-                returnKeyType="send"
-              />
-              <Pressable
-                style={[styles.commentSendBtn, (sending || !body.trim()) && styles.sendBtnDisabled]}
-                onPress={submit}
-                disabled={sending || !body.trim()}>
-                {sending ? (
-                  <ActivityIndicator color={MonoColors.onInk} size="small" />
-                ) : (
-                  <Feather name="send" size={15} color={MonoColors.onInk} />
-                )}
-              </Pressable>
-            </View>
+            {!friend?.is_self && (
+              <View style={styles.commentInputRow}>
+                <TextInput
+                  style={styles.commentInput}
+                  placeholder="今日のひと言を送る"
+                  placeholderTextColor={MonoColors.textMuted}
+                  value={body}
+                  onChangeText={setBody}
+                  maxLength={200}
+                  onSubmitEditing={submit}
+                  returnKeyType="send"
+                />
+                <Pressable
+                  style={[styles.commentSendBtn, (sending || !body.trim()) && styles.sendBtnDisabled]}
+                  onPress={submit}
+                  disabled={sending || !body.trim()}>
+                  {sending ? (
+                    <ActivityIndicator color={MonoColors.onInk} size="small" />
+                  ) : (
+                    <Feather name="send" size={15} color={MonoColors.onInk} />
+                  )}
+                </Pressable>
+              </View>
+            )}
 
             <Pressable onPress={close} hitSlop={8} style={styles.cancelLink}>
               <Text style={styles.cancelLinkText}>閉じる</Text>
@@ -1289,6 +1332,7 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
   },
   commentRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+  commentDeleteBtn: { padding: 4 },
   commentRowName: { fontSize: 12, fontWeight: '700', color: MonoColors.ink },
   commentRowBody: { fontSize: 13, color: MonoColors.inkSoft, marginTop: 2, lineHeight: 18 },
   commentRowTime: { fontSize: 10, color: MonoColors.textMuted, marginTop: 2 },

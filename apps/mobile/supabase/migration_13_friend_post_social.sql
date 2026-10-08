@@ -104,10 +104,18 @@ where r.post_id = r2.post_id
   and r.type = r2.type
   and r.id > r2.id;
 
+-- ユニーク制約は裏でインデックスも作るため、重複時に出るエラーは
+-- duplicate_object ではなく duplicate_table (42P07) になる。
+-- exceptionで握りつぶすと取りこぼすので、存在チェックしてから追加する
 do $$ begin
-  alter table public.reactions
-    add constraint reactions_unique_user_type unique (post_id, user_id, type);
-exception when duplicate_object then null; end $$;
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'reactions_unique_user_type' and conrelid = 'public.reactions'::regclass
+  ) then
+    alter table public.reactions
+      add constraint reactions_unique_user_type unique (post_id, user_id, type);
+  end if;
+end $$;
 
 do $$ begin
   alter publication supabase_realtime add table public.reactions;

@@ -95,9 +95,14 @@ where r.post_id = r2.post_id
   and r.id > r2.id;
 
 do $$ begin
-  alter table public.reactions
-    add constraint reactions_unique_user_type unique (post_id, user_id, type);
-exception when duplicate_object then null; end $$;
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'reactions_unique_user_type' and conrelid = 'public.reactions'::regclass
+  ) then
+    alter table public.reactions
+      add constraint reactions_unique_user_type unique (post_id, user_id, type);
+  end if;
+end $$;
 
 do $$ begin
   alter publication supabase_realtime add table public.reactions;
@@ -381,7 +386,42 @@ exception when duplicate_object then null; end $$;
 
 -- #####################################################################
 -- ##  14. 継続ランキングのフレンドカードへの「ひと言コメント」
+-- ##      公開範囲: A(投稿者)の投稿が見えるのは「A本人」「B(カード本人)本人」
+-- ##      「AともBとも両方acceptedなフレンドの人」だけ。Bのフレンドというだけ
+-- ##      （Aのフレンドではない人）には見せない。
 -- #####################################################################
+
+create or replace function public.is_accepted_friend(a uuid, b uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.friendships f
+    where f.status = 'accepted'
+      and ((f.user_id_a = a and f.user_id_b = b) or (f.user_id_b = a and f.user_id_a = b))
+  )
+$$;
+
+revoke all on function public.is_accepted_friend(uuid, uuid) from public, anon;
+grant execute on function public.is_accepted_friend(uuid, uuid) to authenticated;
+
+create or replace function public.can_view_friend_comment(p_from uuid, p_to uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select auth.uid() = p_from
+      or auth.uid() = p_to
+      or (public.is_accepted_friend(auth.uid(), p_from) and public.is_accepted_friend(auth.uid(), p_to))
+$$;
+
+revoke all on function public.can_view_friend_comment(uuid, uuid) from public, anon;
+grant execute on function public.can_view_friend_comment(uuid, uuid) to authenticated;
 
 create table if not exists public.friend_comments (
   id           uuid primary key default gen_random_uuid(),
@@ -399,8 +439,12 @@ alter table public.friend_comments enable row level security;
 drop policy if exists friend_comments_select on public.friend_comments;
 drop policy if exists friend_comments_delete_own on public.friend_comments;
 
+-- 投稿から24時間を過ぎたものは誰からも見えない
 create policy friend_comments_select on public.friend_comments
-  for select using (public.can_view_user_posts(to_user_id));
+  for select using (
+    created_at > now() - interval '24 hours'
+    and public.can_view_friend_comment(from_user_id, to_user_id)
+  );
 create policy friend_comments_delete_own on public.friend_comments
   for delete using (from_user_id = auth.uid() or to_user_id = auth.uid());
 
@@ -469,7 +513,8 @@ as $$
   from public.friend_comments c
   join public.users u on u.id = c.from_user_id
   where c.to_user_id = p_to_user_id
-    and public.can_view_user_posts(p_to_user_id)
+    and c.created_at > now() - interval '24 hours'
+    and public.can_view_friend_comment(c.from_user_id, c.to_user_id)
   order by c.created_at desc
   limit greatest(1, coalesce(p_limit, 30));
 $$;
@@ -488,28 +533,28 @@ stable
 security definer
 set search_path = public
 as $$
-  with visible as (
-    select unnest(p_to_user_ids) as uid
-  ),
-  v as (
-    select uid from visible where public.can_view_user_posts(uid)
+  with visible_comments as (
+    select c.*
+    from public.friend_comments c
+    where c.to_user_id = any(p_to_user_ids)
+      and c.created_at > now() - interval '24 hours'
+      and public.can_view_friend_comment(c.from_user_id, c.to_user_id)
   ),
   latest as (
-    select distinct on (c.to_user_id)
-      c.to_user_id, c.body, u.name as from_name, c.created_at
-    from public.friend_comments c
-    join public.users u on u.id = c.from_user_id
-    where c.to_user_id in (select uid from v)
-    order by c.to_user_id, c.created_at desc
+    select distinct on (vc.to_user_id)
+      vc.to_user_id, vc.body, u.name as from_name, vc.created_at
+    from visible_comments vc
+    join public.users u on u.id = vc.from_user_id
+    order by vc.to_user_id, vc.created_at desc
   )
   select
-    v.uid,
-    coalesce((select count(*)::int from public.friend_comments c where c.to_user_id = v.uid), 0),
+    t.uid,
+    coalesce((select count(*)::int from visible_comments vc2 where vc2.to_user_id = t.uid), 0),
     l.body,
     l.from_name,
     l.created_at
-  from v
-  left join latest l on l.to_user_id = v.uid;
+  from unnest(p_to_user_ids) as t(uid)
+  left join latest l on l.to_user_id = t.uid;
 $$;
 
 revoke all on function public.add_friend_comment(uuid, text)      from public, anon;
@@ -522,6 +567,44 @@ grant execute on function public.delete_friend_comment(uuid)         to authenti
 grant execute on function public.get_friend_comments(uuid, int)      to authenticated;
 grant execute on function public.get_friend_comment_summary(uuid[])  to authenticated;
 
+-- ---------------------------------------------------------------------
+-- 24時間を過ぎたコメントの物理削除（1時間おき、pg_cron）
+-- ---------------------------------------------------------------------
+-- 上のRLS/RPCのフィルタだけで「24時間経ったら誰にも見えない」は既に保証済み。
+-- これは実データをテーブルに残し続けないための掃除用（pg_cronが無効でも
+-- アプリの見え方には影響しない）。
+create or replace function public.purge_expired_friend_comments()
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  delete from public.friend_comments where created_at <= now() - interval '24 hours';
+$$;
+
+revoke all on function public.purge_expired_friend_comments() from public, anon, authenticated;
+
+do $$ begin
+  create extension if not exists pg_cron;
+exception when insufficient_privilege then
+  raise notice 'pg_cron を自動作成できませんでした。Supabaseダッシュボード > Database > Extensions で pg_cron を有効化してから、このファイルをもう一度実行してください（有効化するまでは物理削除だけ遅延し、見え方の24時間制限には影響しません）。';
+end $$;
+
+do $$ begin
+  perform cron.unschedule('purge_expired_friend_comments_hourly');
+exception when others then null; end $$;
+
+do $$ begin
+  perform cron.schedule(
+    'purge_expired_friend_comments_hourly',
+    '0 * * * *',
+    $cron$select public.purge_expired_friend_comments();$cron$
+  );
+exception when others then
+  raise notice 'pg_cronのスケジュール登録に失敗しました（拡張が未有効化の可能性）。見え方には影響しません。';
+end $$;
+
 -- =====================================================================
 -- 完了。以降、friends.tsx のリアクション（🔥😭など）とコメント欄が動きます。
+-- コメントは投稿から24時間で自動的に見えなくなり、1時間おきに実データも削除されます。
 -- =====================================================================
