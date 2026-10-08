@@ -49,7 +49,11 @@ import {
   getFriendComments,
   getFriendCommentSummary,
 } from '@/services/friendCommentService';
-import { getMyNudgesSentToday, sendFriendNudge } from '@/services/friendNudgeService';
+import {
+  getMyNudgesSentToday,
+  getMyReceivedNudges,
+  sendFriendNudge,
+} from '@/services/friendNudgeService';
 import {
   acceptFriendRequest,
   fetchFriendRequests,
@@ -60,7 +64,7 @@ import {
   subscribeToFriendRequests,
   subscribeToPresence,
 } from '@/services/friendsService';
-import type { FriendCommentRow, FriendCommentSummaryRow } from '@/types/db';
+import type { FriendCommentRow, FriendCommentSummaryRow, ReceivedNudgeRow } from '@/types/db';
 import type { Friend, FriendRequest, OnlineMap } from '@/types/friends';
 
 /** オンライン枠の発光カラー（ピンク／ゴールド） */
@@ -134,6 +138,8 @@ function FriendsDashboard() {
   const [commentSummary, setCommentSummary] = useState<Record<string, FriendCommentSummaryRow>>({});
   /** コメント一覧モーダルを開いている相手。null なら閉じている */
   const [commentTarget, setCommentTarget] = useState<Friend | null>(null);
+  /** 自分が受け取ったリアクション一覧（新しい順）。コメントモーダルの上部に表示する */
+  const [receivedNudges, setReceivedNudges] = useState<ReceivedNudgeRow[]>([]);
 
   const load = useCallback(async () => {
     // フレンド一覧・申請は既存の最重要データ。ここが失敗したら他は試さない
@@ -164,6 +170,12 @@ function FriendsDashboard() {
       setCommentSummary(Object.fromEntries(summaries.map((s) => [s.to_user_id, s])));
     } catch (e) {
       console.warn('[friends] コメントの取得に失敗しました（migration_14未実行の可能性）', e);
+    }
+
+    try {
+      setReceivedNudges(await getMyReceivedNudges());
+    } catch (e) {
+      console.warn('[friends] 受け取ったリアクションの取得に失敗しました（migration_12未実行の可能性）', e);
     }
   }, []);
 
@@ -269,8 +281,9 @@ function FriendsDashboard() {
     ]);
   };
 
+  // 週間ランキング: 今週（JST月曜始まり）の筋トレ時間が多い順
   const ranked = useMemo(
-    () => [...friends].sort((a, b) => b.streak_days - a.streak_days),
+    () => [...friends].sort((a, b) => b.week_minutes - a.week_minutes),
     [friends],
   );
   const friendsOnly = ranked.filter((f) => !f.is_self);
@@ -340,7 +353,7 @@ function FriendsDashboard() {
         {/* ランキング */}
         <View style={styles.section}>
           <View style={styles.sectionHead}>
-            <Text style={styles.sectionLabel}>継続ランキング</Text>
+            <Text style={styles.sectionLabel}>週間ランキング</Text>
             {friendsOnly.length > 0 && (
               <Text style={styles.sectionHint}>長押しで解除</Text>
             )}
@@ -370,6 +383,7 @@ function FriendsDashboard() {
       <AddFriendModal visible={addOpen} onClose={() => setAddOpen(false)} />
       <CommentModal
         friend={commentTarget}
+        receivedNudges={receivedNudges}
         onClose={() => setCommentTarget(null)}
         onPosted={load}
       />
@@ -870,10 +884,13 @@ function AddFriendModal({
 
 function CommentModal({
   friend,
+  receivedNudges,
   onClose,
   onPosted,
 }: {
   friend: Friend | null;
+  /** 自分のカードの時だけ、上部に横一列で表示する */
+  receivedNudges: ReceivedNudgeRow[];
   onClose: () => void;
   onPosted: () => void;
 }) {
@@ -974,6 +991,30 @@ function CommentModal({
                 : 'フレンドだけに見える、ひと言の応援メモです（24時間で自動的に消えます）'}
             </Text>
 
+            {friend?.is_self && (
+              <>
+                <Text style={styles.reactionRowLabel}>もらったリアクション</Text>
+                {receivedNudges.length === 0 ? (
+                  <Text style={styles.commentEmpty}>まだリアクションはありません</Text>
+                ) : (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.reactionRow}>
+                    {receivedNudges.map((n, i) => (
+                      <View key={`${n.from_user_id}-${n.created_at}-${i}`} style={styles.reactionChip}>
+                        <Text style={styles.reactionChipEmoji}>{n.emoji}</Text>
+                        <Text style={styles.reactionChipName} numberOfLines={1}>
+                          {n.from_name ?? 'ゲスト'}
+                        </Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                )}
+                <View style={styles.reactionDivider} />
+              </>
+            )}
+
             <ScrollView style={styles.commentList} contentContainerStyle={{ gap: 12 }}>
               {loading ? (
                 <ActivityIndicator color={MonoColors.ink} />
@@ -1040,6 +1081,10 @@ function CommentModal({
     </Modal>
   );
 }
+
+/* ============================================================
+ * もらったリアクション一覧モーダル（自分のカード用・閲覧のみ）
+ * ========================================================== */
 
 /* ============================================================
  * ヘルパー
@@ -1324,6 +1369,31 @@ const styles = StyleSheet.create({
   commentPreviewCount: { color: MonoColors.textMuted },
 
   commentSheet: { maxHeight: '80%' },
+
+  reactionRowLabel: {
+    alignSelf: 'stretch',
+    fontSize: 11,
+    fontWeight: '700',
+    color: MonoColors.textMuted,
+    letterSpacing: 0.5,
+    marginTop: 4,
+  },
+  reactionRow: { gap: 8, paddingVertical: 8 },
+  reactionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: MonoColors.surface,
+    borderWidth: 1,
+    borderColor: MonoColors.border,
+    borderRadius: MonoLayout.radiusPill,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  reactionChipEmoji: { fontSize: 13 },
+  reactionChipName: { fontSize: 11, fontWeight: '700', color: MonoColors.inkSoft, maxWidth: 90 },
+  reactionDivider: { alignSelf: 'stretch', height: 1, backgroundColor: MonoColors.border, marginTop: 4 },
+
   commentList: { alignSelf: 'stretch', maxHeight: 280, marginTop: 4 },
   commentEmpty: {
     fontSize: 12,

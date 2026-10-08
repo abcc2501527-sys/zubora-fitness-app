@@ -6,18 +6,26 @@
  *
  *   sendFriendNudge(toUserId, emoji) … 送信＋Push通知
  *   getMyNudgesSentToday()           … 今日もう送った相手（ボタンのdisabled判定用）
+ *   getMyReceivedNudges()            … 自分が受け取ったリアクション一覧（新しい順）
  * =====================================================================
  */
 
 import { supabase } from '@/supabase';
 import { sendPushNotification } from '@/services/notificationService';
-import type { NudgeSentTodayRow, SendNudgeResult } from '@/types/db';
+import type { NudgeSentTodayRow, ReceivedNudgeRow, SendNudgeResult } from '@/types/db';
 
 /** 今日すでに送った相手一覧。UIでボタンを送信済み表示に切り替えるために使う */
 export async function getMyNudgesSentToday(): Promise<NudgeSentTodayRow[]> {
   const { data, error } = await supabase.rpc('get_my_nudges_sent_today');
   if (error) throw error;
   return (data ?? []) as NudgeSentTodayRow[];
+}
+
+/** 自分が受け取ったリアクション一覧（新しい順）。自分のカードのプレビュー表示に使う */
+export async function getMyReceivedNudges(): Promise<ReceivedNudgeRow[]> {
+  const { data, error } = await supabase.rpc('get_my_received_nudges', { p_limit: 20 });
+  if (error) throw error;
+  return (data ?? []) as ReceivedNudgeRow[];
 }
 
 /** 応援ナッジを送る（フレンド限定・1日1回まで）。送れたらPush通知も送る */

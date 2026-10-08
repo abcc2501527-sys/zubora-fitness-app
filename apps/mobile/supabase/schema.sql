@@ -1166,10 +1166,35 @@ as $$
     and (n.created_at at time zone 'Asia/Tokyo')::date = (now() at time zone 'Asia/Tokyo')::date;
 $$;
 
+drop function if exists public.get_my_received_nudges(int);
+create function public.get_my_received_nudges(p_limit int default 20)
+returns table (
+  from_user_id uuid,
+  from_name    text,
+  from_avatar_url text,
+  from_avatar_emoji text,
+  emoji        text,
+  created_at   timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select n.from_user_id, u.name, u.avatar_url, u.avatar_emoji, n.emoji, n.created_at
+  from public.friend_nudges n
+  join public.users u on u.id = n.from_user_id
+  where n.to_user_id = auth.uid()
+  order by n.created_at desc
+  limit greatest(1, coalesce(p_limit, 20));
+$$;
+
 revoke all on function public.send_friend_nudge(uuid, text) from public, anon;
 revoke all on function public.get_my_nudges_sent_today()     from public, anon;
+revoke all on function public.get_my_received_nudges(int)    from public, anon;
 grant execute on function public.send_friend_nudge(uuid, text) to authenticated;
 grant execute on function public.get_my_nudges_sent_today()     to authenticated;
+grant execute on function public.get_my_received_nudges(int)    to authenticated;
 
 do $$ begin
   alter publication supabase_realtime add table public.friend_nudges;

@@ -129,6 +129,16 @@ export type NudgeSentTodayRow = {
   emoji: string;
 };
 
+/** RPC: get_my_received_nudges() の1行（自分が受け取ったリアクション、新しい順） */
+export type ReceivedNudgeRow = {
+  from_user_id: string;
+  from_name: string | null;
+  from_avatar_url: string | null;
+  from_avatar_emoji: string | null;
+  emoji: string;
+  created_at: string;
+};
+
 /** send_friend_nudge() の失敗理由 */
 export type SendNudgeResult =
   | { ok: true }

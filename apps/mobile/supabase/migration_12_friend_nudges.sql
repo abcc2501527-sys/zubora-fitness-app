@@ -9,6 +9,7 @@
 --  追加テーブル: friend_nudges (from_user_id, to_user_id, emoji, created_at)
 --  追加RPC: send_friend_nudge(p_to_user_id, p_emoji)
 --           get_my_nudges_sent_today()  … 今日もう送った相手一覧（ボタンのdisabled用）
+--           get_my_received_nudges(p_limit) … 自分が受け取ったリアクション一覧（新しい順）
 --
 --  schema.sql 実行済みの環境で、この差分だけ SQL Editor で Run。
 --  何度実行しても安全。
@@ -94,10 +95,36 @@ as $$
     and (n.created_at at time zone 'Asia/Tokyo')::date = (now() at time zone 'Asia/Tokyo')::date;
 $$;
 
+-- 自分が受け取ったリアクション一覧（新しい順。送ってきた人の名前/アバター付き）
+drop function if exists public.get_my_received_nudges(int);
+create function public.get_my_received_nudges(p_limit int default 20)
+returns table (
+  from_user_id uuid,
+  from_name    text,
+  from_avatar_url text,
+  from_avatar_emoji text,
+  emoji        text,
+  created_at   timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select n.from_user_id, u.name, u.avatar_url, u.avatar_emoji, n.emoji, n.created_at
+  from public.friend_nudges n
+  join public.users u on u.id = n.from_user_id
+  where n.to_user_id = auth.uid()
+  order by n.created_at desc
+  limit greatest(1, coalesce(p_limit, 20));
+$$;
+
 revoke all on function public.send_friend_nudge(uuid, text) from public, anon;
 revoke all on function public.get_my_nudges_sent_today()     from public, anon;
+revoke all on function public.get_my_received_nudges(int)    from public, anon;
 grant execute on function public.send_friend_nudge(uuid, text) to authenticated;
 grant execute on function public.get_my_nudges_sent_today()     to authenticated;
+grant execute on function public.get_my_received_nudges(int)    to authenticated;
 
 do $$ begin
   alter publication supabase_realtime add table public.friend_nudges;
